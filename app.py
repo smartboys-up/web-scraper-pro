@@ -15,8 +15,14 @@ import shutil
 import glob
 import random
 import requests
+import ssl
+import urllib3
+from urllib3.exceptions import InsecureRequestWarning
 from datetime import datetime
 import logging
+
+# Disable SSL warnings for problematic sites
+urllib3.disable_warnings(InsecureRequestWarning)
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +31,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-class StealthWebScraper:
+class SmartWebScraper:
     def __init__(self):
         self.driver = None
         self.user_data_dir = None
@@ -36,40 +42,72 @@ class StealthWebScraper:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
         ]
         return random.choice(user_agents)
     
-    def test_url_with_requests(self, url):
-        """Test URL accessibility with requests library using realistic headers"""
-        try:
-            headers = {
-                'User-Agent': self.get_random_user_agent(),
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-            }
-            
-            logger.info(f"Testing URL with requests: {url}")
-            response = requests.get(url, headers=headers, timeout=15, allow_redirects=True, verify=False)
-            logger.info(f"Requests test response: {response.status_code}")
-            
-            if response.status_code == 200:
-                logger.info("✅ URL is accessible via requests")
-                return True
-            else:
-                logger.warning(f"⚠️ URL returned status: {response.status_code}")
-                return False
-                
-        except requests.exceptions.RequestException as e:
-            logger.error(f"❌ Requests test failed: {e}")
-            return False
+    def test_url_smart(self, url):
+        """Smart URL testing with HTTP/HTTPS fallback"""
+        logger.info(f"🔍 Smart testing URL: {url}")
         
-    def setup_stealth_driver(self, headless=True):
-        """Setup Chrome WebDriver with maximum stealth features"""
+        # Create list of URLs to test
+        urls_to_test = []
+        
+        if url.startswith('https://'):
+            urls_to_test.append(url)  # Try HTTPS first
+            urls_to_test.append(url.replace('https://', 'http://'))  # Then HTTP
+        elif url.startswith('http://'):
+            urls_to_test.append(url)  # Try HTTP first
+            urls_to_test.append(url.replace('http://', 'https://'))  # Then HTTPS
+        else:
+            # If no protocol specified, try both
+            urls_to_test.append(f"https://{url}")
+            urls_to_test.append(f"http://{url}")
+        
+        headers = {
+            'User-Agent': self.get_random_user_agent(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+        
+        for test_url in urls_to_test:
+            try:
+                logger.info(f"Testing: {test_url}")
+                response = requests.get(
+                    test_url, 
+                    headers=headers,
+                    timeout=15, 
+                    verify=False,  # Ignore SSL issues
+                    allow_redirects=True
+                )
+                
+                if response.status_code == 200:
+                    logger.info(f"✅ SUCCESS: {test_url} (Status: {response.status_code})")
+                    return test_url, True
+                else:
+                    logger.warning(f"⚠️ {test_url} returned status: {response.status_code}")
+                    
+            except requests.exceptions.SSLError as e:
+                logger.warning(f"🔒 SSL error for {test_url}: {e}")
+                continue
+            except requests.exceptions.Timeout as e:
+                logger.warning(f"⏰ Timeout for {test_url}: {e}")
+                continue
+            except requests.exceptions.ConnectionError as e:
+                logger.warning(f"🔌 Connection error for {test_url}: {e}")
+                continue
+            except Exception as e:
+                logger.warning(f"❌ Error testing {test_url}: {e}")
+                continue
+        
+        logger.error(f"❌ All URL variants failed for: {url}")
+        return url, False
+    
+    def setup_smart_driver(self, headless=True):
+        """Setup Chrome WebDriver with smart configuration"""
         chrome_options = Options()
         
         if headless:
@@ -77,7 +115,7 @@ class StealthWebScraper:
         
         # Generate unique user data directory
         unique_id = uuid.uuid4().hex[:8]
-        self.user_data_dir = f"/tmp/chrome_stealth_{unique_id}"
+        self.user_data_dir = f"/tmp/chrome_smart_{unique_id}"
         
         # Clean up if directory exists
         if os.path.exists(self.user_data_dir):
@@ -92,51 +130,54 @@ class StealthWebScraper:
         except Exception as e:
             logger.warning(f"Failed to create directory: {e}")
         
-        # Stealth Chrome arguments
+        # Smart Chrome arguments
         chrome_options.add_argument(f"--user-data-dir={self.user_data_dir}")
         chrome_options.add_argument(f"--remote-debugging-port={random.randint(9000, 9999)}")
         
-        # Basic stealth options
+        # Core options
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--no-first-run")
         chrome_options.add_argument("--disable-default-apps")
-        chrome_options.add_argument("--disable-background-networking")
         
-        # Anti-detection options
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_argument("--disable-features=VizDisplayCompositor")
+        # SSL and security handling
+        chrome_options.add_argument("--ignore-certificate-errors")
+        chrome_options.add_argument("--ignore-ssl-errors")
+        chrome_options.add_argument("--ignore-certificate-errors-spki-list")
+        chrome_options.add_argument("--allow-running-insecure-content")
         chrome_options.add_argument("--disable-web-security")
-        chrome_options.add_argument("--disable-site-isolation-trials")
-        chrome_options.add_argument("--disable-features=TranslateUI")
-        chrome_options.add_argument("--disable-ipc-flooding-protection")
+        chrome_options.add_argument("--disable-features=VizDisplayCompositor")
         
-        # Mimic real browser behavior
-        chrome_options.add_argument("--window-size=1366,768")  # Common screen size
-        chrome_options.add_argument("--start-maximized")
-        chrome_options.add_argument(f"--user-agent={self.get_random_user_agent()}")
-        
-        # Disable automation indicators
+        # Anti-detection
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
         
-        # Additional preferences
+        # Performance and compatibility
+        chrome_options.add_argument("--disable-background-networking")
+        chrome_options.add_argument("--disable-extensions")
+        chrome_options.add_argument("--disable-plugins")
+        chrome_options.add_argument("--disable-images")  # Faster loading
+        chrome_options.add_argument("--window-size=1366,768")
+        chrome_options.add_argument(f"--user-agent={self.get_random_user_agent()}")
+        
+        # Preferences
         prefs = {
             "profile.default_content_setting_values": {
-                "notifications": 2,  # Block notifications
-                "media_stream": 2,   # Block media access
+                "notifications": 2,
+                "media_stream": 2,
             },
             "profile.managed_default_content_settings": {
-                "images": 2  # Block images for faster loading
+                "images": 2
             }
         }
         chrome_options.add_experimental_option("prefs", prefs)
         
-        # Try to find Chrome/Chromium binary
+        # Find Chrome binary
         chrome_binaries = [
             "/usr/bin/chromium-browser",
-            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome", 
             "/usr/bin/chrome",
             "/usr/bin/chromium",
             "/snap/bin/chromium"
@@ -149,17 +190,17 @@ class StealthWebScraper:
                 break
         
         try:
-            # Clean up any existing temp directories first
+            # Clean up old directories
             self.cleanup_temp_dirs()
             
-            # Try direct Chrome initialization (skip webdriver-manager for stealth)
+            # Initialize Chrome
             self.driver = webdriver.Chrome(options=chrome_options)
             
             # Set timeouts
-            self.driver.set_page_load_timeout(30)
+            self.driver.set_page_load_timeout(45)
             self.driver.implicitly_wait(10)
             
-            # Execute stealth JavaScript to hide automation
+            # Execute stealth JavaScript
             stealth_js = """
             Object.defineProperty(navigator, 'webdriver', {
                 get: () => undefined,
@@ -176,14 +217,6 @@ class StealthWebScraper:
             window.chrome = {
                 runtime: {},
             };
-            
-            Object.defineProperty(navigator, 'permissions', {
-                get: () => ({
-                    query: async (parameters) => ({
-                        state: Notification.permission === 'denied' ? 'denied' : 'granted'
-                    }),
-                }),
-            });
             """
             
             self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
@@ -192,154 +225,134 @@ class StealthWebScraper:
             
             # Test basic navigation
             try:
-                logger.info("Testing stealth WebDriver with basic navigation...")
-                self.driver.get("data:text/html,<html><body><h1>Stealth Test</h1></body></html>")
-                logger.info("✅ Stealth WebDriver basic navigation test passed")
+                logger.info("Testing smart WebDriver...")
+                self.driver.get("data:text/html,<html><body><h1>Smart Test</h1></body></html>")
+                logger.info("✅ Smart WebDriver test passed")
             except Exception as e:
-                logger.warning(f"Stealth WebDriver basic test failed: {e}")
+                logger.warning(f"Smart WebDriver test failed: {e}")
             
-            logger.info(f"✅ Stealth WebDriver initialized successfully with directory: {self.user_data_dir}")
+            logger.info(f"✅ Smart WebDriver initialized: {self.user_data_dir}")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Stealth WebDriver initialization failed: {e}")
+            logger.error(f"❌ Smart WebDriver initialization failed: {e}")
             self.cleanup_current_session()
             return False
     
-    def stealth_get_page(self, url, max_retries=3):
-        """Navigate to page with maximum stealth and retries"""
+    def smart_get_page(self, url, max_retries=3):
+        """Smart page loading with automatic HTTP/HTTPS fallback"""
+        
+        # First, find the working URL
+        working_url, is_accessible = self.test_url_smart(url)
+        
+        if not is_accessible:
+            raise Exception(f"URL {url} is not accessible via HTTP or HTTPS")
+        
+        logger.info(f"🎯 Using working URL: {working_url}")
+        
         for attempt in range(max_retries):
             try:
-                logger.info(f"Stealth attempt {attempt + 1}/{max_retries}: Loading {url}")
+                logger.info(f"Smart attempt {attempt + 1}/{max_retries}: Loading {working_url}")
                 
-                # Test with requests first
-                if not self.test_url_with_requests(url):
-                    if attempt == max_retries - 1:
-                        raise Exception(f"URL {url} is not accessible via requests")
-                    else:
-                        logger.info("Requests failed, but trying with WebDriver anyway...")
-                
-                # Random delay before navigation (human-like behavior)
+                # Random delay before navigation (human-like)
                 time.sleep(random.uniform(1, 3))
                 
-                # Navigate to page
-                self.driver.get(url)
-                
-                # Random delay after navigation
-                time.sleep(random.uniform(2, 4))
+                # Navigate to the working URL
+                self.driver.get(working_url)
                 
                 # Wait for page to load
-                WebDriverWait(self.driver, 20).until(
+                WebDriverWait(self.driver, 25).until(
                     EC.presence_of_element_located((By.TAG_NAME, "body"))
                 )
                 
                 # Additional wait for dynamic content
-                time.sleep(random.uniform(1, 3))
+                time.sleep(random.uniform(2, 4))
                 
-                # Scroll page to simulate human behavior
-                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
-                time.sleep(1)
-                self.driver.execute_script("window.scrollTo(0, 0);")
+                # Simulate human behavior
+                try:
+                    self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight/3);")
+                    time.sleep(1)
+                    self.driver.execute_script("window.scrollTo(0, 0);")
+                except:
+                    pass
                 
-                logger.info(f"✅ Successfully loaded with stealth: {url}")
+                # Verify page loaded properly
+                page_source = self.driver.page_source
+                if len(page_source) < 200:
+                    raise Exception("Page appears to be empty or not fully loaded")
+                
+                logger.info(f"✅ Successfully loaded: {working_url}")
                 return True
                 
             except TimeoutException:
-                logger.warning(f"Timeout loading {url} on stealth attempt {attempt + 1}")
+                logger.warning(f"Timeout on attempt {attempt + 1}")
                 if attempt < max_retries - 1:
                     time.sleep(random.uniform(3, 6))
                     continue
                 else:
-                    raise TimeoutException(f"Failed to load {url} after {max_retries} stealth attempts")
+                    raise TimeoutException(f"Failed to load {working_url} after {max_retries} attempts")
                     
             except WebDriverException as e:
                 error_str = str(e)
+                logger.warning(f"WebDriver error on attempt {attempt + 1}: {error_str}")
+                
                 if any(err in error_str for err in ["ERR_CONNECTION_REFUSED", "ERR_CONNECTION_CLOSED", "net::"]):
-                    logger.warning(f"Network error on stealth attempt {attempt + 1}: {error_str}")
                     if attempt < max_retries - 1:
-                        # Restart driver with new settings
-                        logger.info("Restarting stealth WebDriver due to network error...")
+                        logger.info("Restarting WebDriver due to connection error...")
                         self.close()
-                        time.sleep(random.uniform(5, 8))
-                        self.setup_stealth_driver()
+                        time.sleep(random.uniform(3, 6))
+                        self.setup_smart_driver()
                         continue
                     else:
-                        raise Exception(f"Network connection failed after {max_retries} stealth attempts: {error_str}")
+                        raise Exception(f"Persistent connection issues: {error_str}")
                 else:
                     raise
                     
             except Exception as e:
-                logger.error(f"Unexpected error on stealth attempt {attempt + 1}: {e}")
+                logger.error(f"Unexpected error on attempt {attempt + 1}: {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(random.uniform(3, 6))
+                    time.sleep(random.uniform(2, 5))
                     continue
                 else:
                     raise
     
-    def cleanup_current_session(self):
-        """Clean up current session data"""
-        if self.user_data_dir and os.path.exists(self.user_data_dir):
-            try:
-                shutil.rmtree(self.user_data_dir)
-                logger.info(f"Cleaned up stealth session directory: {self.user_data_dir}")
-            except Exception as e:
-                logger.warning(f"Failed to cleanup {self.user_data_dir}: {e}")
-    
-    def cleanup_temp_dirs(self):
-        """Clean up old temp directories"""
-        try:
-            temp_dirs = glob.glob("/tmp/chrome_stealth_*")
-            for temp_dir in temp_dirs:
-                try:
-                    # Only remove directories older than 1 hour
-                    if os.path.getctime(temp_dir) < time.time() - 3600:
-                        shutil.rmtree(temp_dir)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-    
     def scrape_text_content(self, url):
-        """Scrape all text content from the page with stealth"""
+        """Smart text content scraping"""
         try:
-            logger.info(f"Stealth scraping text content from: {url}")
+            logger.info(f"Smart scraping text content from: {url}")
             
-            # Use stealth navigation
-            self.stealth_get_page(url)
+            # Use smart navigation
+            self.smart_get_page(url)
             
-            # Wait a bit more for dynamic content
+            # Wait for dynamic content
             time.sleep(2)
             
-            # Get all text elements, excluding script and style tags
-            elements = self.driver.find_elements(By.XPATH, "//p | //h1 | //h2 | //h3 | //h4 | //h5 | //h6 | //span | //div[not(script) and not(style)]")
+            # Get all text elements
+            elements = self.driver.find_elements(By.XPATH, "//p | //h1 | //h2 | //h3 | //h4 | //h5 | //h6 | //span | //div[not(script) and not(style)] | //li | //td | //th")
             
             text_content = []
             for element in elements:
                 try:
                     text = element.text.strip()
-                    if text and len(text) > 10:  # Filter out very short texts
+                    if text and len(text) > 5:  # Include shorter texts
                         text_content.append(text)
                 except Exception:
                     continue
             
             # Remove duplicates and limit results
-            unique_content = list(dict.fromkeys(text_content))[:50]
-            logger.info(f"Found {len(unique_content)} text elements with stealth scraping")
+            unique_content = list(dict.fromkeys(text_content))[:100]  # Increased limit
+            logger.info(f"Found {len(unique_content)} text elements")
             return unique_content
             
         except Exception as e:
-            logger.error(f"Error in stealth text scraping: {e}")
+            logger.error(f"Error in smart text scraping: {e}")
             raise
     
     def scrape_links(self, url):
-        """Scrape all links from the page with stealth"""
+        """Smart link scraping"""
         try:
-            logger.info(f"Stealth scraping links from: {url}")
-            
-            # Use stealth navigation
-            self.stealth_get_page(url)
-            
-            # Wait for dynamic links to load
+            logger.info(f"Smart scraping links from: {url}")
+            self.smart_get_page(url)
             time.sleep(2)
             
             links = self.driver.find_elements(By.TAG_NAME, "a")
@@ -350,40 +363,39 @@ class StealthWebScraper:
                     href = link.get_attribute("href")
                     text = link.text.strip()
                     
-                    if href and text and href.startswith(('http://', 'https://')):
+                    if href and href.startswith(('http://', 'https://', '/')):
+                        if not text:
+                            text = href  # Use URL as text if no text available
+                        
                         link_data.append({
-                            "text": text[:100],  # Limit text length
+                            "text": text[:150],  # Increased text length
                             "url": href
                         })
                 except Exception:
                     continue
             
-            # Remove duplicates and limit results
+            # Remove duplicates
             unique_links = []
             seen_urls = set()
             for link in link_data:
                 if link["url"] not in seen_urls:
                     unique_links.append(link)
                     seen_urls.add(link["url"])
-                if len(unique_links) >= 50:
+                if len(unique_links) >= 75:  # Increased limit
                     break
             
-            logger.info(f"Found {len(unique_links)} unique links with stealth scraping")
+            logger.info(f"Found {len(unique_links)} unique links")
             return unique_links
             
         except Exception as e:
-            logger.error(f"Error in stealth link scraping: {e}")
+            logger.error(f"Error in smart link scraping: {e}")
             raise
     
     def scrape_images(self, url):
-        """Scrape all image URLs from the page with stealth"""
+        """Smart image scraping"""
         try:
-            logger.info(f"Stealth scraping images from: {url}")
-            
-            # Use stealth navigation
-            self.stealth_get_page(url)
-            
-            # Wait for images to load
+            logger.info(f"Smart scraping images from: {url}")
+            self.smart_get_page(url)
             time.sleep(3)
             
             images = self.driver.find_elements(By.TAG_NAME, "img")
@@ -392,60 +404,66 @@ class StealthWebScraper:
             for img in images:
                 try:
                     src = img.get_attribute("src")
-                    if src and src.startswith(('http://', 'https://')):
-                        image_urls.append(src)
+                    if src:
+                        # Convert relative URLs to absolute
+                        if src.startswith('/'):
+                            current_url = self.driver.current_url
+                            base_url = f"{current_url.split('://')[0]}://{current_url.split('/')[2]}"
+                            src = base_url + src
+                        
+                        if src.startswith(('http://', 'https://', 'data:')):
+                            image_urls.append(src)
                 except Exception:
                     continue
             
-            # Remove duplicates and limit results
-            unique_images = list(dict.fromkeys(image_urls))[:50]
-            logger.info(f"Found {len(unique_images)} unique images with stealth scraping")
+            unique_images = list(dict.fromkeys(image_urls))[:75]  # Increased limit
+            logger.info(f"Found {len(unique_images)} unique images")
             return unique_images
             
         except Exception as e:
-            logger.error(f"Error in stealth image scraping: {e}")
+            logger.error(f"Error in smart image scraping: {e}")
             raise
     
     def scrape_titles(self, url):
-        """Scrape all heading elements (h1-h6) from the page with stealth"""
+        """Smart title scraping"""
         try:
-            logger.info(f"Stealth scraping titles from: {url}")
-            
-            # Use stealth navigation
-            self.stealth_get_page(url)
-            
-            # Wait for content to load
+            logger.info(f"Smart scraping titles from: {url}")
+            self.smart_get_page(url)
             time.sleep(2)
             
-            headings = self.driver.find_elements(By.XPATH, "//h1 | //h2 | //h3 | //h4 | //h5 | //h6")
+            # Get page title first
             titles = []
+            try:
+                page_title = self.driver.title
+                if page_title:
+                    titles.append(f"Page Title: {page_title}")
+            except:
+                pass
+            
+            # Get all headings
+            headings = self.driver.find_elements(By.XPATH, "//h1 | //h2 | //h3 | //h4 | //h5 | //h6 | //title")
             
             for heading in headings:
                 try:
                     text = heading.text.strip()
-                    if text:
+                    if text and text not in titles:
                         titles.append(text)
                 except Exception:
                     continue
             
-            # Remove duplicates and limit results
-            unique_titles = list(dict.fromkeys(titles))[:50]
-            logger.info(f"Found {len(unique_titles)} unique titles with stealth scraping")
+            unique_titles = titles[:75]  # Increased limit
+            logger.info(f"Found {len(unique_titles)} unique titles")
             return unique_titles
             
         except Exception as e:
-            logger.error(f"Error in stealth title scraping: {e}")
+            logger.error(f"Error in smart title scraping: {e}")
             raise
     
     def scrape_custom_selector(self, url, selector):
-        """Scrape elements using custom CSS selector with stealth"""
+        """Smart custom selector scraping"""
         try:
-            logger.info(f"Stealth scraping with custom selector '{selector}' from: {url}")
-            
-            # Use stealth navigation
-            self.stealth_get_page(url)
-            
-            # Wait for dynamic content
+            logger.info(f"Smart scraping with selector '{selector}' from: {url}")
+            self.smart_get_page(url)
             time.sleep(3)
             
             elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
@@ -453,53 +471,71 @@ class StealthWebScraper:
             
             for element in elements:
                 try:
-                    # Try to get text content first
+                    # Try multiple ways to get content
                     text = element.text.strip()
                     if not text:
-                        # Try other attributes if no text
                         text = (element.get_attribute("value") or 
                                element.get_attribute("alt") or 
                                element.get_attribute("title") or
-                               element.get_attribute("href"))
+                               element.get_attribute("href") or
+                               element.get_attribute("src"))
                     
                     if text:
                         results.append(text)
                     else:
-                        # If no text, get limited HTML
+                        # Get limited HTML as fallback
                         html = element.get_attribute("outerHTML")
                         if html:
-                            results.append(html[:200] + "..." if len(html) > 200 else html)
+                            results.append(html[:300] + "..." if len(html) > 300 else html)
                 except Exception:
                     continue
             
-            # Remove duplicates and limit results
-            unique_results = list(dict.fromkeys(results))[:50]
-            logger.info(f"Found {len(unique_results)} elements with stealth selector '{selector}'")
+            unique_results = list(dict.fromkeys(results))[:75]  # Increased limit
+            logger.info(f"Found {len(unique_results)} elements with selector '{selector}'")
             return unique_results
             
         except Exception as e:
-            logger.error(f"Error in stealth custom selector scraping: {e}")
+            logger.error(f"Error in smart custom selector scraping: {e}")
             raise
     
+    def cleanup_current_session(self):
+        """Clean up current session data"""
+        if self.user_data_dir and os.path.exists(self.user_data_dir):
+            try:
+                shutil.rmtree(self.user_data_dir)
+                logger.info(f"Cleaned up smart session directory: {self.user_data_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to cleanup {self.user_data_dir}: {e}")
+    
+    def cleanup_temp_dirs(self):
+        """Clean up old temp directories"""
+        try:
+            temp_dirs = glob.glob("/tmp/chrome_smart_*")
+            for temp_dir in temp_dirs:
+                try:
+                    if os.path.getctime(temp_dir) < time.time() - 3600:
+                        shutil.rmtree(temp_dir)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    
     def close(self):
-        """Enhanced cleanup for stealth scraper"""
+        """Enhanced cleanup"""
         if self.driver:
             try:
                 self.driver.quit()
-                logger.info("Stealth WebDriver closed successfully")
+                logger.info("Smart WebDriver closed successfully")
             except Exception as e:
-                logger.warning(f"Error closing stealth WebDriver: {e}")
+                logger.warning(f"Error closing smart WebDriver: {e}")
             finally:
                 self.driver = None
         
-        # Cleanup session directory
         self.cleanup_current_session()
-        
-        # Cleanup old temp directories
         self.cleanup_temp_dirs()
 
-# Initialize stealth scraper instance
-scraper = StealthWebScraper()
+# Initialize smart scraper
+scraper = SmartWebScraper()
 
 @app.route('/')
 def index():
@@ -510,12 +546,27 @@ def index():
     except FileNotFoundError:
         return """
         <html>
-        <head><title>Stealth Web Scraper Pro</title></head>
+        <head><title>🧠 Smart Web Scraper Pro</title></head>
         <body>
-        <h1>🥷 Stealth Web Scraper Pro</h1>
-        <p>Advanced anti-detection web scraping with Selenium</p>
+        <h1>🧠 Smart Web Scraper Pro</h1>
+        <p>Automatic HTTP/HTTPS detection and intelligent scraping</p>
         <p>The templates/index.html file is missing. Please create it first.</p>
         <p>API is available at <a href="/api/health">/api/health</a></p>
+        <h2>✅ Test Sites:</h2>
+        <ul>
+            <li><strong>http://deepthpk.com</strong> - Should work now!</li>
+            <li>https://httpbin.org/html - Always works</li>
+            <li>https://example.com - Reliable</li>
+            <li>https://quotes.toscrape.com - Scraping friendly</li>
+        </ul>
+        <h2>🚀 Features:</h2>
+        <ul>
+            <li>✅ Automatic HTTP/HTTPS fallback</li>
+            <li>✅ Smart SSL handling</li>
+            <li>✅ Anti-detection stealth mode</li>
+            <li>✅ Enhanced error recovery</li>
+            <li>✅ Increased result limits</li>
+        </ul>
         </body>
         </html>
         """, 200
@@ -530,7 +581,7 @@ def static_files(filename):
 
 @app.route('/api/scrape', methods=['POST'])
 def scrape_endpoint():
-    """Main stealth scraping endpoint"""
+    """Smart scraping endpoint with HTTP/HTTPS auto-detection"""
     try:
         data = request.get_json()
         
@@ -544,17 +595,19 @@ def scrape_endpoint():
         if not url or not scraping_type:
             return jsonify({"error": "URL and scraping type are required"}), 400
         
-        # Validate URL
-        if not url.startswith(('http://', 'https://')):
-            return jsonify({"error": "Invalid URL format. Must start with http:// or https://"}), 400
+        # Basic URL validation (allow URLs without protocol)
+        if not any(url.startswith(proto) for proto in ['http://', 'https://']):
+            if '.' in url:  # Looks like a domain
+                url = f"https://{url}"  # Default to HTTPS, will fallback to HTTP if needed
+            else:
+                return jsonify({"error": "Invalid URL format"}), 400
         
-        # Setup stealth driver if not already done
+        # Setup smart driver if needed
         if not scraper.driver:
-            logger.info("Stealth WebDriver not initialized, setting up...")
-            if not scraper.setup_stealth_driver():
-                return jsonify({"error": "Failed to initialize stealth web driver. Please check Chrome/Chromium installation."}), 500
+            logger.info("Smart WebDriver not initialized, setting up...")
+            if not scraper.setup_smart_driver():
+                return jsonify({"error": "Failed to initialize smart web driver"}), 500
         
-        # Perform stealth scraping based on type
         start_time = time.time()
         
         try:
@@ -568,10 +621,10 @@ def scrape_endpoint():
                 results = scraper.scrape_titles(url)
             elif scraping_type == 'custom':
                 if not custom_selector:
-                    return jsonify({"error": "Custom selector is required for custom scraping type"}), 400
+                    return jsonify({"error": "Custom selector is required"}), 400
                 results = scraper.scrape_custom_selector(url, custom_selector)
             else:
-                return jsonify({"error": "Invalid scraping type. Must be: text, links, images, titles, or custom"}), 400
+                return jsonify({"error": "Invalid scraping type"}), 400
             
             end_time = time.time()
             
@@ -583,26 +636,26 @@ def scrape_endpoint():
                 "data": results,
                 "timestamp": datetime.now().isoformat(),
                 "execution_time": round(end_time - start_time, 2),
-                "stealth_mode": True
+                "smart_mode": True,
+                "actual_url": scraper.driver.current_url if scraper.driver else url
             }
             
             if scraping_type == 'custom':
                 response_data["selector"] = custom_selector
             
-            logger.info(f"✅ Successfully stealth scraped {len(results)} items from {url} in {response_data['execution_time']}s")
+            logger.info(f"✅ Smart scraping successful: {len(results)} items from {url}")
             return jsonify(response_data)
             
-        except TimeoutException:
-            return jsonify({"error": "Page load timeout - website may be slow, protected, or unresponsive"}), 408
-        except NoSuchElementException:
-            return jsonify({"error": "Could not find specified elements on the page"}), 404
         except Exception as e:
             error_msg = str(e)
-            if any(err in error_msg for err in ["ERR_CONNECTION_REFUSED", "ERR_CONNECTION_CLOSED", "net::"]):
-                return jsonify({"error": f"Network connection blocked. Website may have anti-bot protection: {error_msg}"}), 502
+            if "not accessible via HTTP or HTTPS" in error_msg:
+                return jsonify({
+                    "error": f"Website is not accessible via HTTP or HTTPS: {error_msg}",
+                    "suggestion": "Check if the website URL is correct and the site is online"
+                }), 502
             else:
-                logger.error(f"Stealth scraping error: {e}")
-                return jsonify({"error": f"Stealth scraping failed: {error_msg}"}), 500
+                logger.error(f"Smart scraping error: {e}")
+                return jsonify({"error": f"Smart scraping failed: {error_msg}"}), 500
             
     except Exception as e:
         logger.error(f"Request processing error: {e}")
@@ -616,29 +669,29 @@ def health_check():
         "timestamp": datetime.now().isoformat(),
         "driver_active": scraper.driver is not None,
         "user_data_dir": scraper.user_data_dir,
-        "stealth_mode": True
+        "smart_mode": True,
+        "features": ["HTTP/HTTPS auto-fallback", "SSL tolerance", "Anti-detection", "Enhanced scraping"]
     })
 
 @app.route('/api/restart-driver', methods=['POST'])
 def restart_driver():
-    """Restart the stealth WebDriver instance"""
+    """Restart the smart WebDriver"""
     try:
-        logger.info("Restarting stealth WebDriver...")
+        logger.info("Restarting smart WebDriver...")
         scraper.close()
         
-        if scraper.setup_stealth_driver():
+        if scraper.setup_smart_driver():
             return jsonify({
                 "success": True, 
-                "message": "Stealth driver restarted successfully",
-                "user_data_dir": scraper.user_data_dir
+                "message": "Smart driver restarted successfully"
             })
         else:
             return jsonify({
                 "success": False, 
-                "message": "Failed to restart stealth driver"
+                "message": "Failed to restart smart driver"
             }), 500
     except Exception as e:
-        logger.error(f"Stealth driver restart error: {e}")
+        logger.error(f"Driver restart error: {e}")
         return jsonify({
             "success": False, 
             "message": str(e)
@@ -655,30 +708,25 @@ def internal_error(error):
 
 def cleanup():
     """Clean up resources on shutdown"""
-    logger.info("Shutting down stealth application...")
+    logger.info("Shutting down smart application...")
     scraper.close()
 
-# Register cleanup function
 import atexit
 atexit.register(cleanup)
 
 if __name__ == '__main__':
-    # Create directories if they don't exist
     os.makedirs('templates', exist_ok=True)
     os.makedirs('static', exist_ok=True)
     
-    # Initialize stealth driver on startup
-    logger.info("🥷 Starting Stealth Web Scraper Pro...")
-    logger.info("Initializing stealth WebDriver...")
+    logger.info("🧠 Starting Smart Web Scraper Pro...")
+    logger.info("Features: HTTP/HTTPS auto-fallback, SSL tolerance, Anti-detection")
+    logger.info("Initializing smart WebDriver...")
     
-    if scraper.setup_stealth_driver():
-        logger.info("✅ Stealth WebDriver initialized successfully")
+    if scraper.setup_smart_driver():
+        logger.info("✅ Smart WebDriver initialized successfully")
     else:
-        logger.warning("⚠️  Stealth WebDriver initialization failed - will retry on first scrape request")
+        logger.warning("⚠️ Smart WebDriver initialization failed - will retry on first request")
     
-    # Get port from environment (for deployment)
     port = int(os.environ.get('PORT', 5000))
-    
-    # Run the Flask app
-    logger.info(f"🌐 Starting stealth server on port {port}")
+    logger.info(f"🌐 Starting smart server on port {port}")
     app.run(debug=True, host='0.0.0.0', port=port)
